@@ -8,7 +8,16 @@ const $=id=>document.getElementById(id);let selected=null,editing=null,previewUr
  (auth.currentUser?Promise.resolve(auth.currentUser):auth.signInAnonymously()).then(()=>{ready=true;setStatus('Terhubung ke Firebase Cloud.');render();firestore.collection('transwisataDocuments').onSnapshot(snap=>{cloudCache=snap.docs.map(d=>({...d.data(),id:d.id,source:'cloud'}));cacheLoaded=true;render()},e=>setStatus('Sinkronisasi gagal: '+e.message));}).catch(e=>{firebaseError=e.message;setStatus('Firebase gagal: '+e.message+' — Periksa Anonymous Authentication dan domain hosting.');});
  function setStatus(t){$('status').textContent=t}
  async function allRecords(){return ready?cloudCache:[]}
- async function fileBlob(record){if(record.file instanceof Blob)return record.file;if(!record.storagePath)throw Error('File tidak ditemukan');return await (await storage.ref(record.storagePath).getBlob())}
+ async function fileBlob(record){
+  if(record.file instanceof Blob)return record.file;
+  if(!record.storagePath)throw Error('File tidak ditemukan');
+  // Firebase Storage compat v10 does not expose ref.getBlob().
+  // Retrieve the authorized download URL and fetch its bytes instead.
+  const url=await storage.ref(record.storagePath).getDownloadURL();
+  const response=await fetch(url,{method:'GET'});
+  if(!response.ok)throw Error('Gagal mengambil file (HTTP '+response.status+')');
+  return await response.blob();
+}
  async function saveCloud(record){let id=editing?.id||firestore.collection('transwisataDocuments').doc().id;let old=editing?.old||null;let path=old?.storagePath||null;if(selected && (!old||selected!==old.file)){path='transwisataDocuments/'+id+'/'+Date.now()+'_'+selected.name.replace(/[^a-zA-Z0-9._-]/g,'_');await new Promise((resolve,reject)=>{const task=storage.ref(path).put(selected,{contentType:selected.type||({pdf:'application/pdf',jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp'}[selected.name.split('.').pop().toLowerCase()]||'application/octet-stream')});task.on('state_changed',snap=>{const pct=Math.round(snap.bytesTransferred/Math.max(1,snap.totalBytes)*100);setStatus('Upload ke Firebase Storage: '+pct+'%');$('save').textContent='Upload '+pct+'%';},reject,resolve)});}let data={documentType:record.documentType,date:record.date,customer:record.customer,registration:record.registration,aircraftType:record.aircraftType,sheetNo:record.sheetNo,filename:record.filename,mime:record.mime,storagePath:path,createdAt:old?.createdAt||Date.now(),updatedAt:Date.now()};await firestore.collection('transwisataDocuments').doc(id).set(data);if(old?.storagePath&&old.storagePath!==path)await storage.ref(old.storagePath).delete().catch(()=>{});}
  async function deleteCloud(record){await firestore.collection('transwisataDocuments').doc(record.id).delete();if(record.storagePath)await storage.ref(record.storagePath).delete().catch(()=>{})}
  function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function normalizeText(t){return String(t||'').replace(/\r/g,'\n').replace(/[‐‑–—]/g,'-').replace(/\u00a0/g,' ')}
